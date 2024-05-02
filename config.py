@@ -9,7 +9,7 @@ def get_config():
         "d_model": 512,
         "datasource": 'opus_books',
         "lang_src": "fr",
-        "lang_tgt": "pl",
+        "lang_tgt": "en",
         "model_folder": "weights",
         "model_basename": "tmodel_",
         "preload": "latest",
