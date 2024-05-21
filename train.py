@@ -2,16 +2,20 @@ from model import build_transformer
 from dataset import BilingualDataset, causal_mask
 from config import get_config, get_weights_file_path, latest_weights_file_path
 
-import torchtext.datasets as datasets
+import torchtext
+# torchtext.disable_torchtext_deprecation_warning()
+from torchtext import datasets as datasets
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, random_split
 from torch.optim.lr_scheduler import LambdaLR
 
 import warnings
+import wandb
 from tqdm import tqdm
 import os
 from pathlib import Path
+
 
 # Huggingface datasets and tokenizers
 from datasets import load_dataset
@@ -22,6 +26,7 @@ from tokenizers.pre_tokenizers import Whitespace
 
 import torchmetrics
 from torch.utils.tensorboard import SummaryWriter
+
 
 def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, device):
     sos_idx = tokenizer_tgt.token_to_id('[SOS]')
@@ -101,25 +106,30 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
                 print_msg('-'*console_width)
                 break
     
-    if writer:
         # Evaluate the character error rate
         # Compute the char error rate 
         metric = torchmetrics.CharErrorRate()
         cer = metric(predicted, expected)
         writer.add_scalar('validation cer', cer, global_step)
+        wandb.log({"validation_cer": cer, "global_step": global_step})
         writer.flush()
 
         # Compute the word error rate
         metric = torchmetrics.WordErrorRate()
         wer = metric(predicted, expected)
         writer.add_scalar('validation wer', wer, global_step)
+        wandb.log({"validation_wer": wer, "global_step": global_step})
         writer.flush()
 
         # Compute the BLEU metric
         metric = torchmetrics.BLEUScore()
         bleu = metric(predicted, expected)
         writer.add_scalar('validation BLEU', bleu, global_step)
+        wandb.log({"validation_blue": bleu, "global_step": global_step})
         writer.flush()
+        
+        return cer.item(), wer.item(), bleu.item()
+        
 
 def get_all_sentences(ds, lang):
     for item in ds:
@@ -219,6 +229,9 @@ def train_model(config):
 
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1).to(device)
 
+    wandb.init(project="Transformers", config=config)
+    wandb.watch(model, log="all")
+    
     for epoch in range(initial_epoch, config['num_epochs']):
         torch.cuda.empty_cache()
         model.train()
@@ -245,6 +258,8 @@ def train_model(config):
             # Log the loss
             writer.add_scalar('train loss', loss.item(), global_step)
             writer.flush()
+            
+            wandb.log({"train_loss": loss.item(), "epoch": epoch, "global_step": global_step})
 
             # Backpropagate the loss
             loss.backward()
@@ -256,8 +271,10 @@ def train_model(config):
             global_step += 1
 
         # Run validation at the end of every epoch
-        run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer)
+        cer, wer, bleu = run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer)
 
+        wandb.log({"validation_cer": cer, "validation_wer": wer, "validation_bleu": bleu, "epoch": epoch, "global_step": global_step})
+        
         # Save the model at the end of every epoch
         model_filename = get_weights_file_path(config, f"{epoch:02d}")
         torch.save({
@@ -267,6 +284,9 @@ def train_model(config):
             'global_step': global_step
         }, model_filename)
 
+        wandb.save(model_filename)
+        
+    wandb.finish()
 
 if __name__ == '__main__':
     warnings.filterwarnings("ignore")
